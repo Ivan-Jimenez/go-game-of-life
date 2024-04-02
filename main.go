@@ -3,8 +3,10 @@ package main
 import (
 	"fmt"
 	"log"
+	"math/rand"
 	"runtime"
 	"strings"
+	"time"
 
 	"github.com/go-gl/gl/v4.1-core/gl"
 	"github.com/go-gl/glfw/v3.2/glfw"
@@ -14,8 +16,11 @@ const (
 	width  = 500
 	height = 500
 
-	rows    = 10
-	columns = 10
+	rows    = 100
+	columns = 100
+
+	threshold = 0.15
+	fps       = 30
 
 	vertexShaderSource = `
 		#version 410
@@ -49,20 +54,99 @@ var (
 type cell struct {
 	drawable uint32
 
+	alive     bool
+	aliveNext bool
+
 	x int
 	y int
 }
 
+// checkState determines the state of the cell for the next tick of the game.
+func (c *cell) checkState(cells [][]*cell) {
+	c.alive = c.aliveNext
+	c.aliveNext = c.alive
+
+	liveCount := c.liveNeighbours(cells)
+	if c.alive {
+		// 1. Any alive cell with fewer than two live neighbours dies, as if
+		// caused by underpopulation.
+		if liveCount < 2 {
+			c.aliveNext = false
+		}
+
+		// 2. Any alive cell with two or three neigthbours lives on the next generation.
+		if liveCount == 2 || liveCount == 3 {
+			c.aliveNext = true
+		}
+
+		// 3. Any cell with more than three live neigthbours dies, as if by overpopulation
+		if liveCount > 3 {
+			c.aliveNext = false
+		}
+	} else {
+		// 4. Any dead cell with exactly three live neigthbours becomes a live cell, as if
+		// by reproduction.
+		if liveCount == 3 {
+			c.aliveNext = true
+		}
+	}
+}
+
+// liveNeighbours returns the number of live neigtbours for a cell.
+func (c *cell) liveNeighbours(cells [][]*cell) int {
+	var liveCount int
+	add := func(x, y int) {
+		// if we're at an edge, check the other side of the board.
+		if x == len(cells) {
+			x = 0
+		} else if x == -1 {
+			x = len(cells) - 1
+		}
+
+		if y == len(cells[x]) {
+			y = 0
+		} else if y == -1 {
+			y = len(cells[x]) - 1
+		}
+
+		if cells[x][y].alive {
+			liveCount++
+		}
+	}
+
+	add(c.x-1, c.y)   // Left
+	add(c.x+1, c.y)   // Right
+	add(c.x, c.y+1)   // Up
+	add(c.x, c.y-1)   // Down
+	add(c.x-1, c.y+1) // Top-Left
+	add(c.x+1, c.y+1) // Top-Right
+	add(c.x-1, c.y-1) // Bottom-Left
+	add(c.x+1, c.y-1) // Bottom-Right
+
+	return liveCount
+}
+
 func (c *cell) draw() {
+	if !c.alive {
+		return
+	}
+
 	gl.BindVertexArray(c.drawable)
 	gl.DrawArrays(gl.TRIANGLES, 0, int32(len(square)/3))
 }
 
 func makeCells() [][]*cell {
+	// rand.Seed(time.Now().UnixNano())
+	rand.New(rand.NewSource(time.Now().UnixNano()))
+
 	cells := make([][]*cell, rows, rows)
 	for x := 0; x < rows; x++ {
 		for y := 0; y < columns; y++ {
 			c := newCell(x, y)
+
+			c.alive = rand.Float64() < threshold
+			c.aliveNext = c.alive
+
 			cells[x] = append(cells[x], c)
 		}
 	}
@@ -165,13 +249,11 @@ func draw(cells [][]*cell, window *glfw.Window, program uint32) {
 	gl.Clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT)
 	gl.UseProgram(program)
 
-	// for x := range cells {
-	// 	for _, c := range cells[x] {
-	// 		c.draw()
-	// 	}
-	// }
-
-	cells[2][3].draw()
+	for x := range cells {
+		for _, c := range cells[x] {
+			c.draw()
+		}
+	}
 
 	glfw.PollEvents()
 	window.SwapBuffers()
@@ -211,6 +293,16 @@ func main() {
 
 	cells := makeCells()
 	for !window.ShouldClose() {
+		t := time.Now()
+
+		for x := range cells {
+			for _, cell := range cells[x] {
+				cell.checkState(cells)
+			}
+		}
+
 		draw(cells, window, program)
+
+		time.Sleep(time.Second/time.Duration(fps) - time.Since(t))
 	}
 }
